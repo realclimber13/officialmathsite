@@ -1,0 +1,20 @@
+import express from 'express';
+import http from 'node:http';
+import {timingSafeEqual} from 'node:crypto';
+import {fileURLToPath} from 'node:url';
+import {dirname,join} from 'node:path';
+import {server as wisp,logging} from '@mercuryworkshop/wisp-js/server';
+const root=dirname(dirname(fileURLToPath(import.meta.url)));
+const secret=process.env.PROXY_BACKEND_TOKEN;if(!secret||secret.length<32)throw Error('PROXY_BACKEND_TOKEN required');
+function authorized(req){const given=Buffer.from(req.headers['x-mathsite-backend-token']||'');const expected=Buffer.from(secret);return given.length===expected.length&&timingSafeEqual(given,expected)}
+const app=express();app.disable('x-powered-by');
+app.get('/healthz',(_q,r)=>r.json({status:'ok',engine:'officialmathsite',engines:['uv','scramjet'],ui:false}));
+app.use((q,r,next)=>{if(!authorized(q))return r.status(403).json({error:'Open Mathsite in ChatGPT Sites.'});delete q.headers['x-mathsite-backend-token'];r.set({'Cross-Origin-Opener-Policy':'same-origin','Cross-Origin-Embedder-Policy':'require-corp','Cross-Origin-Resource-Policy':'same-origin','Service-Worker-Allowed':'/','Cache-Control':'no-store'});next()});
+for(const [route,path] of [['uv','uv'],['baremux','baremux'],['epoxy','epoxy'],['scram','scramjet'],['scramjet','scramjet'],['controller','controller'],['clients','libcurl'],['libcurl','libcurl']])app.use('/'+route,express.static(join(root,'public',path),{index:false}));
+app.get('/uv.sw.js',(_q,r)=>r.type('application/javascript').sendFile(join(root,'public/uv/uv.sw.js')));
+app.get('/sj.sw.js',(_q,r)=>r.type('application/javascript').send(`importScripts('/controller/controller.sw.js');self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));self.addEventListener('fetch',e=>{if($scramjetController.shouldRoute(e))e.respondWith($scramjetController.route(e));});`));
+app.use((_q,r)=>r.status(404).json({error:'Engine assets only. The interface runs on ChatGPT Sites.'}));
+logging.set_level(logging.WARN);Object.assign(wisp.options,{allow_private_ips:false,allow_loopback_ips:false,allow_direct_ip:false,allow_udp_streams:false,allow_tcp_streams:true,port_whitelist:[80,443],stream_limit_per_host:-1,stream_limit_total:128,parse_real_ip:false});
+const server=http.createServer(app);server.on('upgrade',(q,socket,head)=>{if(q.url!=='/wisp/'||!authorized(q)){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');return}try{wisp.routeRequest(q,socket,head)}catch{socket.destroy()}});
+server.listen(Number(process.env.PORT||8080),'0.0.0.0',()=>console.log('Official Mathsite engine ready; UI hosted on ChatGPT Sites.'));
+process.on('SIGTERM',()=>server.close(()=>process.exit(0)));
